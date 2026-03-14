@@ -57,10 +57,7 @@ cd backend
 npm run seed:mongo
 ```
 
-Use these credentials:
-- Admin: `admin@cmrcet.ac.in` / `Admin@123`
-- Faculty: `faculty.demo@cmrcet.ac.in` / `Faculty@123`
-- Student: `22h51a0501@cmrcet.ac.in` / `Student@123`
+
 
 ## Optional Python Mailer Mode
 - Set `MAIL_PROVIDER=python` in `backend/.env`
