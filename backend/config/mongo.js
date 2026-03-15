@@ -1,7 +1,20 @@
+const dns = require("dns");
 const mongoose = require("mongoose");
 
 function readEnv(name) {
   return String(process.env[name] || "").trim();
+}
+
+function parseCommaList(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function isLocalDnsServer(server) {
+  const value = String(server || "").trim();
+  return value === "127.0.0.1" || value === "::1";
 }
 
 function maskMongoUri(uri) {
@@ -18,6 +31,34 @@ function maskMongoUrisInText(text) {
   if (!text) return "";
   const value = String(text);
   return value.replace(/(mongodb(?:\+srv)?:\/\/)([^@\s/]+)@/gi, "$1***:***@");
+}
+
+async function ensureNodeDns() {
+  const explicitServers = parseCommaList(process.env.DNS_SERVERS);
+  if (explicitServers.length > 0) {
+    dns.setServers(explicitServers);
+    return;
+  }
+
+  const currentServers = dns.getServers();
+  const localOnly = currentServers.length > 0 && currentServers.every(isLocalDnsServer);
+  if (!localOnly) return;
+
+  try {
+    await dns.promises.resolve4("example.com");
+    return;
+  } catch (_error) {
+    // Fall through and apply fallback servers.
+  }
+
+  const fallbackServers = parseCommaList(process.env.DNS_FALLBACK_SERVERS);
+  const nextServers = fallbackServers.length > 0 ? fallbackServers : ["8.8.8.8", "1.1.1.1"];
+  dns.setServers(nextServers);
+  console.warn(
+    `Node DNS lookup failed using local resolver (${currentServers.join(
+      ", "
+    )}); switched to ${nextServers.join(", ")}. Set DNS_SERVERS to override.`
+  );
 }
 
 function getMongoCandidates() {
@@ -42,9 +83,24 @@ function isExpectedRollNumberIndex(index) {
   return condition?.$exists === true && String(condition?.$type || "").toLowerCase() === "string";
 }
 
+function isNamespaceNotFoundError(error) {
+  if (!error) return false;
+  if (Number(error.code) === 26) return true;
+  const message = String(error.message || "").toLowerCase();
+  return message.includes("ns does not exist") || message.includes("namespace not found");
+}
+
 async function ensureUserCollectionIndexes() {
   const usersCollection = mongoose.connection.collection("users");
-  const indexes = await usersCollection.indexes();
+  let indexes = [];
+  try {
+    indexes = await usersCollection.indexes();
+  } catch (error) {
+    if (!isNamespaceNotFoundError(error)) {
+      throw error;
+    }
+    indexes = [];
+  }
   const rollNumberIndex = indexes.find((item) => item.name === "rollNumber_1");
 
   if (isExpectedRollNumberIndex(rollNumberIndex)) {
@@ -71,6 +127,7 @@ async function ensureUserCollectionIndexes() {
 }
 
 async function connectMongo() {
+  await ensureNodeDns();
   const mongoCandidates = getMongoCandidates();
   const timeoutMs = Number(process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS || 10000);
 
